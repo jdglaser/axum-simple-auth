@@ -1,0 +1,27 @@
+[package]
+name = "axum-simple-auth"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.75"
+argon2 = "0.5.2"
+axum = "0.6.20"
+chrono = { version = "0.4.31", features = ["std"] }
+colored = "2.0.4"
+futures-util = "0.3.28"
+hmac = "0.12.1"
+jwt = { version = "0.16.0", features = ["openssl"] }
+password-hash = "0.5.0"
+rand = "0.8.5"
+rand_core = { version = "0.6.4", features = ["std"] }
+reqwest = { version = "0.11.22", features = ["json"] }
+serde = { version = "1.0.189", features = ["derive"] }
+serde_json = "1.0.107"
+sha2 = "0.10.8"
+tokio = { version = "1.33.0", features = ["full"] }
+tower = "0.4.13"
+tower-http = { version = "0.4.4", features = ["fs"] }
+uuid = { version = "1.5.0", features = ["v4", "serde"] }
