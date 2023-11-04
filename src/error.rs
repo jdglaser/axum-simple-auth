@@ -15,6 +15,7 @@ pub enum Error {
     Forbidden,
     NotFound,
     Anyhow(anyhow::Error),
+    DuplicateRefreshToken,
 }
 
 // Tell axum how to convert `AppError` into a response.
@@ -28,6 +29,7 @@ impl IntoResponse for Error {
                 println!("Error: {:?}", err);
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
+            Self::DuplicateRefreshToken => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
     }
 }

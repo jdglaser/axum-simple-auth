@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, net::SocketAddr};
 
 use anyhow::{Context, Result};
+use auth_context::AuthenticatedUser;
 use auth_router::auth_router;
 use auth_service::AuthLayer;
 use axum::{
@@ -11,23 +12,20 @@ use axum::{
 use require_auth_service::RequireAuthLayer;
 use serde_json::{json, Value};
 use tower_http::services::ServeDir;
-use user::AuthenticatedUser;
-use user_repo::UserRepo;
 
 mod auth_context;
+mod auth_repo;
 mod auth_router;
 mod auth_service;
 mod error;
 mod log;
 mod require_auth_service;
-mod user;
-mod user_repo;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     log::info("Starting service!");
 
-    let user_repo = UserRepo::new();
+    let user_repo = auth_repo::AuthRepo::new();
 
     let app_state = AppState {
         user_repo: user_repo.clone(),
@@ -46,7 +44,7 @@ async fn main() -> Result<()> {
         .with_state(app_state);
 
     axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
-        .serve(app.into_make_service())
+        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await
         .context("failed to start server")?;
 
@@ -54,12 +52,12 @@ async fn main() -> Result<()> {
 }
 
 async fn test_auth_handler(user: AuthenticatedUser) -> Json<AuthenticatedUser> {
-    return Json(user);
+    Json(user)
 }
 
 #[derive(Clone)]
 pub struct AppState {
-    pub user_repo: UserRepo,
+    pub user_repo: auth_repo::AuthRepo,
 }
 
 #[cfg(test)]

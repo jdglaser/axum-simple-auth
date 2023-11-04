@@ -1,19 +1,22 @@
 use anyhow::Result;
-use axum::{body::Body, http::Request, response::Response};
+use axum::{body::Body, extract::ConnectInfo, http::Request, response::Response, RequestExt};
 use futures_util::future::BoxFuture;
-use std::task::{Context, Poll};
+use std::{
+    net::SocketAddr,
+    task::{Context, Poll},
+};
 use tower::{Layer, Service};
 
-use crate::{auth_context::AuthContext, user_repo::UserRepo};
+use crate::{auth_context::AuthContext, auth_repo::AuthRepo};
 
 #[derive(Clone)]
 pub struct AuthLayer {
-    user_store: UserRepo,
+    user_store: AuthRepo,
     secret: String,
 }
 
 impl AuthLayer {
-    pub fn new(user_store: UserRepo, secret: String) -> Self {
+    pub fn new(user_store: AuthRepo, secret: String) -> Self {
         AuthLayer { user_store, secret }
     }
 }
@@ -32,7 +35,7 @@ impl<S> Layer<S> for AuthLayer {
 
 #[derive(Clone)]
 pub struct AuthService<S> {
-    user_store: UserRepo,
+    user_store: AuthRepo,
     secret: String,
     inner: S,
 }

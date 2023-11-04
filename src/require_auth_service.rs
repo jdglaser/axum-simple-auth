@@ -6,10 +6,9 @@ use std::task::{Context, Poll};
 use tower::{Layer, Service};
 
 use crate::{
-    auth_context::AuthContext,
-    error::{self, Error, Result},
+    auth_context::{AuthContext, AuthenticatedUser},
+    error::Result,
     log::{self, error},
-    user::AuthenticatedUser,
 };
 
 #[derive(Clone)]
@@ -55,7 +54,7 @@ impl<S> RequireAuthService<S> {
         let stored_user = auth_context.get_user(&claims.sub)?;
 
         let authenticated_user = AuthenticatedUser {
-            uuid: stored_user.uuid,
+            uuid: stored_user.user_id,
             email: stored_user.email,
             role: stored_user.role,
         };

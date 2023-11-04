@@ -14,11 +14,13 @@ use sha2::Sha256;
 use uuid::Uuid;
 
 use crate::{
-    auth_router::{LoginRequest, LoginResponse, RegisterRequest},
+    auth_repo::{AuthRepo, RefreshToken, Role, StoredUser},
+    auth_router::{
+        LoginRequest, LoginResponse, RefreshAccessTokenRequest, RefreshAccessTokenResponse,
+        RegisterRequest,
+    },
     error::{Error, Result},
     log::error,
-    user::{AuthenticatedUser, Role, StoredUser},
-    user_repo::UserRepo,
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -30,20 +32,24 @@ pub struct TokenClaims {
 #[derive(Clone)]
 pub struct AuthContext {
     secret: String,
-    user_repo: UserRepo,
+    auth_repo: AuthRepo,
 }
 
 impl AuthContext {
-    pub fn new(user_repo: UserRepo, secret: String) -> Self {
-        Self { user_repo, secret }
+    pub fn new(user_repo: AuthRepo, secret: String) -> Self {
+        Self {
+            auth_repo: user_repo,
+            secret,
+        }
     }
 
     pub fn login(
-        &mut self,
+        &self,
         LoginRequest { email, password }: LoginRequest,
+        client_ip: String,
     ) -> Result<LoginResponse> {
         let user = self
-            .user_repo
+            .auth_repo
             .get_user_by_email(&email)
             .map_err(|_| Error::Unauthorized)?;
 
@@ -53,30 +59,17 @@ impl AuthContext {
             return Err(Error::Unauthorized);
         }
 
-        let refresh_token: String = rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(30)
-            .map(char::from)
-            .collect();
-        self.user_repo
-            .insert_refresh_token(&user.uuid, refresh_token.clone())?;
-
-        let expiration = Utc::now()
-            .checked_add_signed(chrono::Duration::minutes(1))
-            .expect("valid timestamp")
-            .timestamp();
+        let refresh_token = self.generate_refresh_token(&user.user_id, &client_ip)?;
+        let access_token = self.generate_access_token(&user.user_id)?;
 
         Ok(LoginResponse {
-            access_token: self.sign_token(TokenClaims {
-                sub: user.uuid.to_string(),
-                exp: expiration,
-            })?,
-            refresh_token,
+            access_token,
+            refresh_token: refresh_token.value,
         })
     }
 
     pub fn register_user(
-        &mut self,
+        &self,
         RegisterRequest { email, password }: RegisterRequest,
     ) -> Result<()> {
         let salt = SaltString::generate(&mut OsRng);
@@ -85,15 +78,65 @@ impl AuthContext {
 
         let hashed_password = Self::hash_password(&password, salt.as_str())?;
         let user = StoredUser {
-            uuid,
+            user_id: uuid,
             email,
             hashed_password,
             role: Role::User,
             salt: salt.to_string(),
         };
-        self.user_repo.insert_user(user)?;
+        self.auth_repo.insert_user(user)?;
 
         Ok(())
+    }
+
+    pub fn verify_token(&self, token_str: &str) -> Result<TokenClaims> {
+        let key: Hmac<Sha256> = Hmac::new_from_slice(self.secret.as_bytes())?;
+        let claims: TokenClaims = token_str.verify_with_key(&key)?;
+
+        let token_exp = Utc.timestamp_opt(claims.exp, 0).single().ok_or(anyhow!(
+            "Problem converting epoch timestamp to DateTime type."
+        ))?;
+
+        if Utc::now() >= token_exp {
+            return Err(Error::Anyhow(anyhow!("Token expired")));
+        };
+        Ok(claims)
+    }
+
+    pub fn get_user(&self, user_id: &str) -> Result<StoredUser> {
+        let uuid = Uuid::from_str(user_id)?;
+        self.auth_repo.get_user(&uuid)
+    }
+
+    pub fn refresh_access_token(
+        &self,
+        RefreshAccessTokenRequest { refresh_token }: &RefreshAccessTokenRequest,
+        client_ip_address: &str,
+    ) -> Result<RefreshAccessTokenResponse> {
+        let stored_refresh_token = self
+            .auth_repo
+            .find_refresh_token_by_value_and_ip(refresh_token, &client_ip_address)?
+            .ok_or(Error::Unauthorized)?;
+
+        let token_expired_at_utc = Utc
+            .timestamp_opt(stored_refresh_token.expires, 0)
+            .single()
+            .ok_or(anyhow!(
+                "Problem converting epoch timestamp to DateTime type."
+            ))?;
+
+        if refresh_token != &stored_refresh_token.value || Utc::now() > token_expired_at_utc {
+            return Err(Error::Unauthorized);
+        }
+
+        let new_refresh_token =
+            self.generate_refresh_token(&stored_refresh_token.user_id, &client_ip_address)?;
+        let new_access_token = self.generate_access_token(&stored_refresh_token.user_id)?;
+
+        Ok(RefreshAccessTokenResponse {
+            access_token: new_access_token,
+            refresh_token: new_refresh_token.value,
+        })
     }
 
     fn hash_password(password: &str, salt: &str) -> Result<String> {
@@ -118,26 +161,93 @@ impl AuthContext {
         Ok(token_str)
     }
 
-    pub fn verify_token(&self, token_str: &str) -> Result<TokenClaims> {
-        let key: Hmac<Sha256> = Hmac::new_from_slice(self.secret.as_bytes())?;
-        let claims: TokenClaims = token_str.verify_with_key(&key)?;
+    fn generate_access_token(&self, user_id: &Uuid) -> Result<String> {
+        let expiration = Utc::now()
+            .checked_add_signed(chrono::Duration::seconds(30))
+            .expect("valid timestamp")
+            .timestamp();
 
-        let token_exp = Utc.timestamp_opt(claims.exp, 0).single().ok_or(anyhow!(
-            "Problem converting epoch timestamp to DateTime type."
-        ))?;
+        Ok(self
+            .sign_token(TokenClaims {
+                sub: user_id.to_string(),
+                exp: expiration,
+            })
+            .map_err(|_| anyhow!("Failed to sign access token"))?)
+    }
 
-        if Utc::now() >= token_exp {
-            return Err(Error::Anyhow(anyhow!("Token expired")));
+    fn generate_refresh_token(
+        &self,
+        user_id: &Uuid,
+        client_ip_address: &str,
+    ) -> Result<RefreshToken> {
+        let refresh_token_string: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(32)
+            .map(char::from)
+            .collect();
+
+        let refresh_token_expiration = Utc::now()
+            .checked_add_signed(chrono::Duration::days(7))
+            .ok_or(anyhow!(
+                "Unable to add duration to refresh token expiration"
+            ))?
+            .timestamp();
+
+        let refresh_token_id = Uuid::new_v4();
+
+        let mut refresh_token = RefreshToken {
+            uuid: refresh_token_id,
+            value: refresh_token_string,
+            user_id: user_id.clone(),
+            ip_address: client_ip_address.to_owned(),
+            expires: refresh_token_expiration,
         };
-        Ok(claims)
-    }
 
-    pub fn get_user(&self, user_id: &str) -> Result<StoredUser> {
-        let uuid = Uuid::from_str(user_id)?;
-        self.user_repo.get_user(&uuid)
-    }
+        while let Err(Error::DuplicateRefreshToken) =
+            self.auth_repo.insert_refresh_token(refresh_token.clone())
+        {
+            let refresh_token_string: String = rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(30)
+                .map(char::from)
+                .collect();
 
-    pub fn refresh_token(&self, refresh_token: &str) -> Result<TokenClaims> {}
+            refresh_token = RefreshToken {
+                uuid: refresh_token_id,
+                value: refresh_token_string,
+                user_id: user_id.clone(),
+                ip_address: client_ip_address.to_owned(),
+                expires: refresh_token_expiration,
+            };
+        }
+
+        Ok(refresh_token)
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AuthenticatedUser {
+    pub uuid: Uuid,
+    pub email: String,
+    pub role: Role,
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for AuthenticatedUser
+where
+    S: Send + Sync,
+{
+    type Rejection = Error;
+
+    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Error> {
+        let authorized_user = parts
+            .extensions
+            .get::<AuthenticatedUser>()
+            .ok_or(Error::Unauthorized)?
+            .to_owned();
+
+        Ok(authorized_user)
+    }
 }
 
 #[async_trait]
@@ -171,7 +281,7 @@ mod tests {
     fn test_string() -> Result<()> {
         let rand_str: String = rand::thread_rng()
             .sample_iter(&Alphanumeric)
-            .take(30)
+            .take(32)
             .map(char::from)
             .collect();
         println!("{:?}", rand_str);
