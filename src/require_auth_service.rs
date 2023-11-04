@@ -1,5 +1,6 @@
 use anyhow::anyhow;
 use axum::{body::Body, http::header::AUTHORIZATION, http::Request, response::Response};
+use chrono::Utc;
 use futures_util::future::BoxFuture;
 use reqwest::StatusCode;
 use std::task::{Context, Poll};
@@ -7,7 +8,7 @@ use tower::{Layer, Service};
 
 use crate::{
     auth_context::{AuthContext, AuthenticatedUser},
-    error::Result,
+    error::{Error, Result},
     log::{self, error},
 };
 
@@ -49,9 +50,13 @@ impl<S> RequireAuthService<S> {
             .get_mut::<AuthContext>()
             .expect("Missing AuthContext. Is AuthLayer installed?");
 
-        let claims = auth_context.verify_token(&access_token)?;
+        let token = auth_context.get_access_token(&access_token)?;
 
-        let stored_user = auth_context.get_user(&claims.sub)?;
+        if Utc::now() > token.expires {
+            return Err(Error::TokenExpired);
+        }
+
+        let stored_user = auth_context.get_user(&token.user_id.to_string())?;
 
         let authenticated_user = AuthenticatedUser {
             uuid: stored_user.user_id,

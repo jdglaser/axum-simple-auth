@@ -4,8 +4,12 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
     response::{IntoResponse, Response},
+    Json,
 };
+use serde_json::json;
 use tower::Service;
+
+use crate::log::error;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -15,7 +19,9 @@ pub enum Error {
     Forbidden,
     NotFound,
     Anyhow(anyhow::Error),
-    DuplicateRefreshToken,
+    DuplicateToken,
+    TokenNotFound,
+    TokenExpired,
 }
 
 // Tell axum how to convert `AppError` into a response.
@@ -29,7 +35,12 @@ impl IntoResponse for Error {
                 println!("Error: {:?}", err);
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
-            Self::DuplicateRefreshToken => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Self::DuplicateToken => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Self::TokenNotFound => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Self::TokenExpired => {
+                error("Token expired");
+                StatusCode::UNAUTHORIZED.into_response()
+            }
         }
     }
 }

@@ -8,11 +8,15 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::error::{Error, Result};
+use crate::{
+    error::{Error, Result},
+    serde_format::{datetime_format, UtcDatetime},
+};
 
 #[derive(Clone)]
 pub struct AuthRepo {
     users: Arc<RwLock<HashMap<String, StoredUser>>>,
+    access_tokens: Arc<RwLock<HashMap<String, AccessToken>>>,
     refresh_tokens: Arc<RwLock<HashMap<String, RefreshToken>>>,
 }
 
@@ -20,6 +24,7 @@ impl AuthRepo {
     pub fn new() -> Self {
         AuthRepo {
             users: Arc::new(RwLock::new(HashMap::new())),
+            access_tokens: Arc::new(RwLock::new(HashMap::new())),
             refresh_tokens: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -59,26 +64,46 @@ impl AuthRepo {
         Ok(user)
     }
 
+    pub fn insert_access_token(&self, access_token: AccessToken) -> Result<()> {
+        if let Some(_) = self.access_tokens.read().unwrap().get(&access_token.value) {
+            return Err(Error::DuplicateToken);
+        }
+
+        self.access_tokens
+            .write()
+            .unwrap()
+            .insert(access_token.value.clone(), access_token);
+
+        Ok(())
+    }
+
+    pub fn find_access_token(&self, access_token_value: &str) -> Result<Option<AccessToken>> {
+        Ok(self
+            .access_tokens
+            .read()
+            .unwrap()
+            .get(access_token_value)
+            .cloned())
+    }
+
     pub fn insert_refresh_token(&self, refresh_token: RefreshToken) -> Result<()> {
         if let Some(_) = self
             .refresh_tokens
             .read()
             .unwrap()
-            .values()
-            .find(|token| token.value == refresh_token.value)
+            .get(&refresh_token.value)
         {
-            return Err(Error::DuplicateRefreshToken);
+            return Err(Error::DuplicateToken);
         }
 
         self.refresh_tokens
             .write()
             .unwrap()
-            .insert(refresh_token.uuid.to_string(), refresh_token);
+            .insert(refresh_token.value.clone(), refresh_token);
 
         Ok(())
     }
 
-    // https://stackoverflow.com/questions/56133083/how-to-generate-a-refresh-token
     pub fn find_refresh_token_by_value_and_ip(
         &self,
         refresh_token_value: &str,
@@ -88,8 +113,14 @@ impl AuthRepo {
             .refresh_tokens
             .read()
             .unwrap()
-            .values()
-            .find(|token| token.value == refresh_token_value && token.ip_address == ip_address)
+            .get(refresh_token_value)
+            .and_then(|val| {
+                if val.ip_address != ip_address {
+                    None
+                } else {
+                    Some(val)
+                }
+            })
             .cloned();
 
         Ok(token)
@@ -113,9 +144,17 @@ pub enum Role {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RefreshToken {
-    pub uuid: Uuid,
     pub value: String,
     pub user_id: Uuid,
     pub ip_address: String,
-    pub expires: i64,
+    #[serde(with = "datetime_format")]
+    pub expires: DateTime<Utc>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AccessToken {
+    pub value: String,
+    pub user_id: Uuid,
+    #[serde(with = "datetime_format")]
+    pub expires: DateTime<Utc>,
 }

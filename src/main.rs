@@ -20,6 +20,7 @@ mod auth_service;
 mod error;
 mod log;
 mod require_auth_service;
+mod serde_format;
 
 #[tokio::main]
 async fn main() -> Result<()> {
